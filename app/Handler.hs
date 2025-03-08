@@ -56,6 +56,17 @@ instance Profunctor Handler where
   dimap before after (HandlerWrapper h) = HandlerWrapper (h { handle = handle' }) where
     handle' g r i = fmap after $ handle h g r $ before i
 
+instance Functor (Handler i) where
+  fmap = rmap
+
+instance Applicative (Handler i) where
+  pure x = arr $ const x
+  (<*>) = combineH (\a b i -> a i <*> b i)
+
+instance Alternative (Handler i) where
+  empty = liftSTM $ const empty
+  (<|>) = eitherH
+
 withGlobal :: IO g -> (g -> IO ()) -> Handler (g,i) o -> Handler i o
 withGlobal acq rel h = withResources acq rel (const $ return ()) (const return) $ lmap (\(g,(),i) -> (g, i)) h
 

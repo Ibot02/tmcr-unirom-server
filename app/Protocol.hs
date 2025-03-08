@@ -119,3 +119,6 @@ handleAck h p' inQ = do
       check $ p == p'
       h n
     _ -> retry
+
+ignoreAck :: Port -> TBQueue Packet -> STM ()
+ignoreAck = handleAck (const (return ()))

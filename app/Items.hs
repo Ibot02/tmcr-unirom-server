@@ -148,9 +148,6 @@ queueItem qs w i = do
   writeTQueue q i
   writeTQueue q' i
 
-ignoreAck :: Port -> TBQueue Packet -> STM ()
-ignoreAck = handleAck (const (return ()))
-
 handleOutbound :: (G, R, (TBQueue Packet, TQueue Packet)) -> STM ()
 handleOutbound ((_, items),(whoAmI, lastSent),(inQ, outQ)) = sendOutbound <|> handleAck' where
   sendOutbound = do

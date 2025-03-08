@@ -15,6 +15,7 @@ import Control.Concurrent.Async
 import Data.Conduit
 import Data.Conduit.Network
 
+import Control.Applicative
 import Control.Monad
 import Control.Monad.IO.Class
 
@@ -22,6 +23,7 @@ import Protocol (Packet(..), readPackets, writePackets)
 import Handler
 import Settings
 import Items
+import Entrances
 
 debug :: String -> IO ()
 debug = hPutStrLn stderr
@@ -56,4 +58,5 @@ queueSource queue = forever $ do
   yield p
 
 mainHandler :: AppSettings -> Handler (TBQueue Packet, TQueue Packet) ()
-mainHandler s = itemsHandler (placementsFilepath s)
+mainHandler s = itemsHandler (placementsFilepath s) <|> entrances where
+  entrances = if swapEntrances s then handleEntranceSwap else handleEntranceReflect

@@ -9,6 +9,7 @@ data AppSettings = AppSettings {
     hostPref :: HostPreference
   , port :: Int
   , placementsFilepath :: String
+  , swapEntrances :: Bool
   } deriving (Eq, Ord, Show)
 
 
@@ -17,6 +18,7 @@ envSettings = AppSettings
   <$> env' "HOSTNAME" fromString "*"
   <*> env' "PORT" read 8000
   <*> env' "PLACEMENTS_FILEPATH" id "/placements.json"
+  <*> env' "ENTRANCE_SWAP" (const True) False
 
 env' :: String -> (String -> a) -> a -> IO a
 env' e c d = maybe d c <$> lookupEnv e
