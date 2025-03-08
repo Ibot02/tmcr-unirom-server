@@ -7,10 +7,10 @@
   rev = "9189ac18287c599860e878e905da550aa6dec1cd";
 }) {} }:
 let
-  bin = pkgs.haskell.lib.justStaticExecutables (pkgs.haskellPackages.callCabal2nix "entrance-swap" ./. {});
+  bin = pkgs.haskell.lib.justStaticExecutables (pkgs.haskellPackages.callCabal2nix "tmcr-unirom-server" ./. {});
 in pkgs.dockerTools.buildLayeredImage {
-  name = "entrance_swap";
+  name = "unirom_server";
   tag = "latest";
   contents = [ bin ];
-  config.Entrypoint = [ "${bin}/bin/entrance-swap" ];
+  config.Entrypoint = [ "${bin}/bin/tmcr-unirom-server" ];
 }
