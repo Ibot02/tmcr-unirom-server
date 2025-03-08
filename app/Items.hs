@@ -6,7 +6,6 @@ module Items where
 import Handler
 import Protocol
 
-import System.Environment
 import Data.Word
 import Data.Bits
 import Data.Maybe
@@ -15,7 +14,6 @@ import Data.Map (Map)
 import qualified Data.Map as M
 
 import Control.Concurrent.STM
-import Control.Concurrent.STM.TSem
 import qualified StmContainers.Map as TM
 
 import Control.Applicative
@@ -45,33 +43,40 @@ type Placements = Map WorldID (Map Flag Placement)
 
 -- Map Word (Map Flag [(World, Item)])
 
-itemsHandler :: FilePath -> Handler _ _ (TBQueue Packet, TQueue Packet) ()
+itemsHandler :: FilePath -> Handler (TBQueue Packet, TQueue Packet) ()
 itemsHandler f = withResources (acqG f) relG acqR relR $ h
 
 type G = (Placements, TM.Map Word8 (TQueue Item))
-type R = (TMVar Word8, TSem)
+type R = (TMVar Word8, TMVar Item)
 
 acqG :: FilePath -> IO G
 acqG f = (,) <$> (BS.readFile f >>= throwDecode) <*> TM.newIO
 
-acqR :: IO R
-acqR = (,) <$> newEmptyTMVarIO <*> (atomically $ newTSem 1)
+acqR :: G -> IO R
+acqR _ = (,) <$> newEmptyTMVarIO <*> newEmptyTMVarIO
 
 relG :: G -> IO ()
 relG _ = return ()
 
-relR :: R -> IO ()
-relR _ = return ()
+relR :: G -> R -> IO ()
+relR (_, queues) (whoAmI, lastSent) = atomically $ (isEmptyTMVar lastSent >>= check) <|> do
+  i <- takeTMVar lastSent
+  w <- readTMVar whoAmI
+  q <- getQueue queues w
+  unGetTQueue q i
 
-h :: Handler () () (G, R, (TBQueue Packet, TQueue Packet)) ()
+h :: Handler (G, R, (TBQueue Packet, TQueue Packet)) ()
 h = liftSTM $ \i -> handleOutbound i <|> handleLogin i <|> handlePeek i <|> handleLookup i
 
+handleLogin :: (G, R, (TBQueue Packet, TQueue Packet)) -> STM ()
 handleLogin ((_, _),(whoAmI, _),(inQ, outQ)) = do
-  (addr, n, d) <- handlePacket SendItem inQ outQ
+  (_, _, d) <- handlePacket SendItem inQ outQ
   case d of
     [w] -> do
       writeTMVar whoAmI w
     _ -> return ()
+
+handlePeek :: (G, R, (TBQueue Packet, TQueue Packet)) -> STM ()
 handlePeek ((placements, _), (whoAmI, _), (inQ, outQ)) = ignoreAck Peek inQ <|> do
   (addr, n, d) <- handlePacket Peek inQ outQ
   case d of
@@ -80,6 +85,8 @@ handlePeek ((placements, _), (whoAmI, _), (inQ, outQ)) = ignoreAck Peek inQ <|> 
       let (_, item) = findItem placements w (b, b')
       sendItem addr Peek n item outQ
     _ -> return ()
+
+handleLookup :: (G, R, (TBQueue Packet, TQueue Packet)) -> STM ()
 handleLookup ((placements, items), (whoAmI, _), (inQ, outQ)) = ignoreAck Pickup inQ <|> do
   (addr, n, d) <- handlePacket Pickup inQ outQ
   case d of
@@ -107,27 +114,33 @@ encodeLE16 w = (fromIntegral (w .&. 0xFF), fromIntegral (w `shiftR` 8))
 decodeLE16 :: (Word8, Word8) -> Word16
 decodeLE16 (b, b') = fromIntegral b .|. (fromIntegral b' `shiftL` 8)
 
-queueItem :: TM.Map WorldID (TQueue Item) -> WorldID -> Item -> STM ()
-queueItem q w i = do
-  c <- TM.lookup w q
-  c' <- case c of
+getQueue ::  TM.Map WorldID (TQueue Item) -> WorldID -> STM (TQueue Item)
+getQueue qs w = do
+  c <- TM.lookup w qs
+  case c of
     Nothing -> do
       c' <- newTQueue
-      TM.insert c' w q
+      TM.insert c' w qs
       return c'
     Just c' -> return c'
-  writeTQueue c' i
 
+queueItem :: TM.Map WorldID (TQueue Item) -> WorldID -> Item -> STM ()
+queueItem qs w i = do
+  q <- getQueue qs w
+  writeTQueue q i
+
+ignoreAck :: Port -> TBQueue Packet -> STM ()
 ignoreAck = handleAck (const (return ()))
 
-handleOutbound ((_, items),(whoAmI, lock),(inQ, outQ)) = sendOutbound <|> handleAck' where
+handleOutbound :: (G, R, (TBQueue Packet, TQueue Packet)) -> STM ()
+handleOutbound ((_, items),(whoAmI, lastSent),(inQ, outQ)) = sendOutbound <|> handleAck' where
   sendOutbound = do
     w <- readTMVar whoAmI
-    waitTSem lock
     c <- TM.lookup w items
     i <- case c of
       Nothing -> retry
       Just c' -> readTQueue c'
+    putTMVar lastSent i
     sendItem' i
-  handleAck' = handleAck (const $ signalTSem lock) SendItem inQ
+  handleAck' = handleAck (const $ takeTMVar lastSent >> return ()) SendItem inQ
   sendItem' i = sendItem 0 SendItem 0 i outQ

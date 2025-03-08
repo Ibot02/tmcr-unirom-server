@@ -101,6 +101,7 @@ writePacket (AckPacket p n) = do
   yieldW32 n
 
 
+handlePacket :: Port -> TBQueue Packet -> TQueue Packet -> STM (Word8, Word32, [Word8])
 handlePacket channel inQ outQ = do
   packet <- readTBQueue inQ
   case packet of
@@ -110,6 +111,7 @@ handlePacket channel inQ outQ = do
       return (addr, n, d)
     _ -> retry
 
+handleAck :: (Word32 -> STM a) -> Port -> TBQueue Packet -> STM a
 handleAck h p' inQ = do
   packet <- readTBQueue inQ
   case packet of

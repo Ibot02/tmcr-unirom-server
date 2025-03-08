@@ -33,11 +33,11 @@ main = do
   s <- envSettings
   runServer (serverSettings (port s) (hostPref s)) $ mainHandler s
 
-runServer :: ServerSettings -> Handler g r (TBQueue Packet, TQueue Packet) () -> IO ()
-runServer settings handler =
+runServer :: ServerSettings -> Handler (TBQueue Packet, TQueue Packet) () -> IO ()
+runServer settings (HandlerWrapper handler) =
   global_prepare handler $ \g ->
     flip finally (cleanup_global handler g) $
-    runTCPServer settings $ \app -> prepare handler $ \r -> finally (cleanup handler r) $ do
+    runTCPServer settings $ \app -> prepare handler g $ \r -> finally (cleanup handler g r) $ do
       inQ <- newTBQueueIO 20
       outQ <- newTQueueIO
       withAsync (forever $ atomically $ handle handler g r (inQ, outQ)) $ \_ ->
@@ -55,5 +55,5 @@ queueSource queue = forever $ do
   liftIO $ debug $ "> " <> show p
   yield p
 
-mainHandler :: AppSettings -> Handler _ _ (TBQueue Packet, TQueue Packet) ()
+mainHandler :: AppSettings -> Handler (TBQueue Packet, TQueue Packet) ()
 mainHandler s = itemsHandler (placementsFilepath s)

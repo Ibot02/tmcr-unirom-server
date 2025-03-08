@@ -41,7 +41,7 @@ decodeWarp = undefined
 encodeWarp :: Warp -> [Word8]
 encodeWarp = undefined
 
-handleEntranceSwap :: Handler _ _ _ _
+handleEntranceSwap :: Handler (TBQueue Packet, TQueue Packet) ()
 handleEntranceSwap = withResources acqG relG acqR relR $ h
 
 type G = (TMVar (Warp, TMVar Warp))
@@ -50,18 +50,19 @@ type R = (TMVar Warp, TMVar (Word8, Word32))
 acqG :: IO G
 acqG = newEmptyTMVarIO
 
-acqR :: IO R
-acqR = (,) <$> newEmptyTMVarIO <*> newEmptyTMVarIO
+acqR :: G -> IO R
+acqR _ = (,) <$> newEmptyTMVarIO <*> newEmptyTMVarIO
 
 relG :: G -> IO ()
 relG _ = return ()
 
-relR :: R -> IO ()
-relR _ = return ()
+relR :: G -> R -> IO ()
+relR _ _ = return ()
 
-h :: Handler () () (G, R, (TBQueue Packet, TQueue Packet)) ()
+h :: Handler (G, R, (TBQueue Packet, TQueue Packet)) ()
 h = liftSTM $ \i -> handleRead i <|> handleDelayedReply i
 
+handleRead :: (G, R, (TBQueue Packet, TQueue Packet)) -> STM ()
 handleRead (interconnect, (w, p), (inQ, outQ)) = do
   (addr, n, d) <- handlePacket Entrance inQ outQ
   let warp = decodeWarp d
@@ -73,11 +74,13 @@ handleRead (interconnect, (w, p), (inQ, outQ)) = do
       sendWarp (addr, n) warp' outQ
     )
       
-handleDelayedReply (interconnect, (w, p), (inQ, outQ)) = do
+handleDelayedReply :: (G, R, (TBQueue Packet, TQueue Packet)) -> STM ()
+handleDelayedReply (_interconnect, (w, p), (_inQ, outQ)) = do
   (addr, n) <- takeTMVar p
   warp <- takeTMVar w
   sendWarp (addr, n) warp outQ
 
+sendWarp :: (Word8, Word32) -> Warp -> TQueue Packet -> STM ()
 sendWarp (addr, n) warp outQ = do
   let d = encodeWarp warp
   writeTQueue outQ $ DataPacket addr Entrance n d
