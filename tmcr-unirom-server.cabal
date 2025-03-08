@@ -37,5 +37,7 @@ executable tmcr-unirom-server
                     , aeson
                     , stm-containers
                     , binary
+                    , binary-conduit
+                    , exceptions
     hs-source-dirs:   app
     default-language: Haskell2010

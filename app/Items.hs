@@ -1,6 +1,7 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE OverloadedLists #-}
 module Items where
 
 import Handler
@@ -19,7 +20,8 @@ import qualified StmContainers.Map as TM
 import Control.Applicative
 import Control.Monad
 
-import qualified Data.ByteString.Lazy as BS
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString as BS
 
 import Data.Aeson (throwDecode, FromJSON(..), genericParseJSON, Options(..), camelTo2, defaultOptions)
 
@@ -51,7 +53,7 @@ type G = (Placements, TM.Map Word8 (TQueue Item, TQueue Item))
 type R = (TMVar Word8, TMVar Item)
 
 acqG :: FilePath -> IO G
-acqG f = (,) <$> (BS.readFile f >>= throwDecode) <*> TM.newIO
+acqG f = (,) <$> (BL.readFile f >>= throwDecode) <*> TM.newIO
 
 acqR :: G -> IO R
 acqR _ = (,) <$> newEmptyTMVarIO <*> newEmptyTMVarIO
@@ -74,7 +76,7 @@ handleLoginOrSave ((_, qs),(whoAmI, _),(inQ, outQ)) = do
   (_, _, d) <- handlePacket SendItem inQ outQ
   handleLogin whoAmI d qs <|> handleSave whoAmI qs
 
-handleLogin :: TMVar Word8 -> [Word8] -> TM.Map Word8 (TQueue Item, TQueue Item) -> STM ()
+handleLogin :: TMVar Word8 -> BS.ByteString -> TM.Map Word8 (TQueue Item, TQueue Item) -> STM ()
 handleLogin whoAmI [w] qs = do
   writeTMVar whoAmI w
   q' <- TM.lookup w qs

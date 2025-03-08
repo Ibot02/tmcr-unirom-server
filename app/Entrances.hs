@@ -15,7 +15,8 @@ import Control.Lens
 import Data.Binary.Get
 import Data.Binary.Put
 
-import Data.ByteString.Lazy (pack, unpack)
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString as BS
 
 import Protocol
 import Handler
@@ -40,8 +41,8 @@ data Warp = Warp {
 $(makeLenses ''Position)
 $(makeLenses ''Warp)
 
-decodeWarp :: [Word8] -> Maybe Warp
-decodeWarp = either (const Nothing) (\(_,_,w) -> Just w) . runGetOrFail getWarp . pack
+decodeWarp :: BS.ByteString -> Maybe Warp
+decodeWarp = either (const Nothing) (\(_,_,w) -> Just w) . runGetOrFail getWarp . BL.fromStrict
 
 getWarp :: Get Warp
 getWarp = do
@@ -79,8 +80,8 @@ putWarp (Warp {..}) = do
   putWord8 _warpAnim
   putWord8 _warpSpawnState
 
-encodeWarp :: Warp -> [Word8]
-encodeWarp = unpack . runPut . putWarp
+encodeWarp :: Warp -> BS.ByteString
+encodeWarp = BL.toStrict . runPut . putWarp
 
 handleEntranceSwap :: Handler (TBQueue Packet, TQueue Packet) ()
 handleEntranceSwap = withResources acqG relG acqR relR $ h
