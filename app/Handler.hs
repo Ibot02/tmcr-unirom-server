@@ -14,15 +14,15 @@ import Control.Arrow
 
 import Control.Lens
 
+import Control.Exception (bracket)
+
 data Handler i o = forall g r. HandlerWrapper {
     wrappedHandler :: Handler' g r i o
   }
 data Handler' g r i o = HandlerInt {
-    global_prepare :: forall a. (g -> IO a) -> IO a
-  , prepare :: g -> forall a. (r -> IO a) -> IO a
+    with_global :: forall a. (g -> IO a) -> IO a
+  , with_local :: g -> forall a. (r -> IO a) -> IO a
   , handle :: g -> r -> i -> STM o
-  , cleanup :: g -> r -> IO ()
-  , cleanup_global :: g -> IO ()
   }
 
 eitherH :: Handler i o -> Handler i o -> Handler i o
@@ -35,15 +35,13 @@ combineH :: ((i -> STM o) -> (i' -> STM o') -> (i'' -> STM o'')) -> Handler i o 
 combineH w (HandlerWrapper handler) (HandlerWrapper handler') = HandlerWrapper $ combineH' w handler handler'
 
 combineH' :: ((i -> STM o) -> (i' -> STM o') -> (i'' -> STM o'')) -> Handler' g r i o -> Handler' g' r' i' o' -> Handler' (g, g') (r, r') i'' o''
-combineH' w handler handler' = HandlerInt global_prepare' prepare' handle' cleanup' cleanup_global' where
-  global_prepare' c = global_prepare handler $ \g -> global_prepare handler' $ \g' -> c (g, g')
-  prepare' (g, g') c = prepare handler g $ \p -> prepare handler' g' $ \p' -> c (p, p')
+combineH' w handler handler' = HandlerInt with_global' with_local' handle' where
+  with_global' c = with_global handler $ \g -> with_global handler' $ \g' -> c (g, g')
+  with_local' (g, g') c = with_local handler g $ \p -> with_local handler' g' $ \p' -> c (p, p')
   handle' (g, g') (p, p') = w (handle handler g p) (handle handler' g' p')
-  cleanup' (g, g') (p, p') = cleanup handler g p >> cleanup handler' g' p'
-  cleanup_global' (g, g') = cleanup_global handler g >> cleanup_global handler' g'
 
 liftSTM :: (i -> STM o) -> Handler i o
-liftSTM f = HandlerWrapper (HandlerInt ($ ()) (const ($ ())) (const $ const $ f) (const return) return )
+liftSTM f = HandlerWrapper $ HandlerInt ($ ()) (const ($ ())) (const $ const $ f)
 
 instance Category Handler where
   h . h' = composeH h' h
@@ -67,16 +65,20 @@ instance Alternative (Handler i) where
   empty = liftSTM $ const empty
   (<|>) = eitherH
 
-withGlobal :: IO g -> (g -> IO ()) -> Handler (g,i) o -> Handler i o
-withGlobal acq rel h = withResources acq rel (const $ return ()) (const return) $ lmap (\(g,(),i) -> (g, i)) h
-
 withResources :: IO g -> (g -> IO ()) -> (g -> IO r) -> (g -> r -> IO ()) -> Handler (g,r,i) o -> Handler i o
 withResources acqG relG acqL relL (HandlerWrapper handler) = HandlerWrapper $ withResources' acqG relG acqL relL handler
 
-withResources' :: IO g -> (g -> IO ()) -> (g -> IO r) -> (g -> r -> IO ()) -> Handler' g' r' (g,r,i) o -> Handler' (g', g) (r', r) i o
-withResources' acqG relG acqL relL (HandlerInt {..}) = HandlerInt global_prepare' prepare' handle' cleanup' cleanup_global' where
-    global_prepare' cb = global_prepare $ \g' -> acqG >>= \g -> cb (g', g)
-    prepare' (g', g) cb = prepare g' $ \r' -> acqL g >>= \r -> cb (r', r)
+withResourcesBrackets :: (forall a. (g -> IO a) -> IO a) -> (forall a. g -> ((r -> IO a) -> IO a)) -> Handler (g,r,i) o -> Handler i o
+withResourcesBrackets withG withL (HandlerWrapper handler) = HandlerWrapper $ withResourcesBrackets' withG withL handler
+
+withResourcesBrackets' :: (forall a. (g -> IO a) -> IO a) -> (forall a. g -> ((r -> IO a) -> IO a)) ->Handler' g' r' (g,r,i) o -> Handler' (g', g) (r', r) i o
+withResourcesBrackets' withG withL (HandlerInt {..}) = HandlerInt with_global' with_local' handle' where
+    with_global' cb = with_global $ \g' -> withG $ \g -> cb (g', g) -- >>= \g -> cb (g', g)
+    with_local' (g', g) cb = with_local g' $ \r' -> withL g $ \r -> cb (r', r)
     handle' (g', g) (r', r) i = handle g' r' (g,r,i)
-    cleanup' (g', g) (r', r) = relL g r >> cleanup g' r'
-    cleanup_global' (g', g) = relG g >> cleanup_global g'
+
+withResources' :: IO g -> (g -> IO ()) -> (g -> IO r) -> (g -> r -> IO ()) -> Handler' g' r' (g,r,i) o -> Handler' (g', g) (r', r) i o
+withResources' acqG relG acqL relL (HandlerInt {..}) = HandlerInt with_global' with_local' handle' where
+    with_global' cb = with_global $ \g' -> bracket acqG relG $ \g -> cb (g', g) -- >>= \g -> cb (g', g)
+    with_local' (g', g) cb = with_local g' $ \r' -> bracket (acqL g) (relL g) $ \r -> cb (r', r)
+    handle' (g', g) (r', r) i = handle g' r' (g,r,i)

@@ -7,8 +7,6 @@ module Main where
 
 import System.IO
 
-import Control.Exception (finally)
-
 import Control.Concurrent.STM
 import Control.Concurrent.Async
 
@@ -37,9 +35,8 @@ main = do
 
 runServer :: ServerSettings -> Handler (TBQueue Packet, TQueue Packet) () -> IO ()
 runServer settings (HandlerWrapper handler) =
-  global_prepare handler $ \g ->
-    flip finally (cleanup_global handler g) $
-    runTCPServer settings $ \app -> prepare handler g $ \r -> finally (cleanup handler g r) $ do
+  with_global handler $ \g ->
+    runTCPServer settings $ \app -> with_local handler g $ \r -> do
       inQ <- newTBQueueIO 20
       outQ <- newTQueueIO
       withAsync (forever $ atomically $ handle handler g r (inQ, outQ)) $ \_ ->
@@ -58,5 +55,5 @@ queueSource queue = forever $ do
   yield p
 
 mainHandler :: AppSettings -> Handler (TBQueue Packet, TQueue Packet) ()
-mainHandler s = itemsHandler (placementsFilepath s) <|> entrances where
+mainHandler s = itemsHandler (placementsFilepath s) <|> entrances (entranceLogFilepath s) where
   entrances = if swapEntrances s then handleEntranceSwap else handleEntranceReflect

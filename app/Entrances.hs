@@ -4,9 +4,15 @@
 {-# LANGUAGE RecordWildCards #-}
 module Entrances where
 
+import System.IO (withFile, IOMode(AppendMode), Handle(), hPutStrLn)
+
+import Control.Monad (forever, forM_)
+
 import Data.Word
 
 import Control.Concurrent.STM
+import Control.Concurrent.Async (withAsync, cancel, wait)
+import Control.Exception (finally)
 
 import Control.Applicative
 
@@ -83,35 +89,47 @@ putWarp (Warp {..}) = do
 encodeWarp :: Warp -> BS.ByteString
 encodeWarp = BL.toStrict . runPut . putWarp
 
-handleEntranceSwap :: Handler (TBQueue Packet, TQueue Packet) ()
-handleEntranceSwap = withResources acqG relG acqR relR $ h
+handleEntranceSwap :: Maybe FilePath -> Handler (TBQueue Packet, TQueue Packet) ()
+handleEntranceSwap outputFile = withResourcesBrackets (withG outputFile) withR $ h
 
-handleEntranceReflect :: Handler (TBQueue Packet, TQueue Packet) ()
-handleEntranceReflect = liftSTM $ \(inQ, outQ) -> ignoreAck Entrance inQ <|> do
-  (addr, n, warp) <- handleWarp inQ outQ
+handleEntranceReflect :: Maybe FilePath -> Handler (TBQueue Packet, TQueue Packet) ()
+handleEntranceReflect outputFile = withResourcesBrackets (writeToOutput outputFile) (const ($ ())) $ liftSTM $ \(output, (), (inQ, outQ)) -> ignoreAck Entrance inQ <|> do
+  (addr, n, warp) <- handleWarp inQ outQ output
   sendWarp (addr, n) warp outQ
 
-type G = (TMVar (Warp, TMVar Warp))
+type G = (TMVar (Warp, TMVar Warp), Warp -> STM ())
 type R = (TMVar Warp, TMVar (Word8, Word32))
 
-acqG :: IO G
-acqG = newEmptyTMVarIO
+withG :: Maybe FilePath -> (G -> IO a) -> IO a
+withG file cb = do
+  interconnect <- newEmptyTMVarIO
+  writeToOutput file $ \output -> cb (interconnect, output)
 
-acqR :: G -> IO R
-acqR _ = (,) <$> newEmptyTMVarIO <*> newEmptyTMVarIO
+writeToOutput :: Maybe FilePath -> ((Warp -> STM ()) -> IO a) -> IO a
+writeToOutput Nothing cb = cb $ const $ return ()
+writeToOutput (Just file) cb = do
+  q <- newTQueueIO
+  withFile file AppendMode $ \handle -> withAsync (writeAllTo q handle) $ \a -> flip finally (cancel a >> wait a) $ cb $ writeTQueue q --todo: check if the cancel >> wait is neccessary for finalization
 
-relG :: G -> IO ()
-relG _ = return ()
+writeAllTo :: (TQueue Warp) -> Handle -> IO ()
+writeAllTo q handle =
+  finally (forever $ do
+    x <- atomically $ readTQueue q
+    hPutStrLn handle $ show x) (do
+    xs <- atomically $ flushTQueue q
+    forM_ xs $ hPutStrLn handle . show)
 
-relR :: G -> R -> IO ()
-relR _ _ = return ()
+withR :: G -> (R -> IO a) -> IO a
+withR _ cb = do
+  r <- (,) <$> newEmptyTMVarIO <*> newEmptyTMVarIO
+  cb r
 
 h :: Handler (G, R, (TBQueue Packet, TQueue Packet)) ()
 h = liftSTM $ \i -> handleRead i <|> handleDelayedReply i
 
 handleRead :: (G, R, (TBQueue Packet, TQueue Packet)) -> STM ()
-handleRead (interconnect, (w, p), (inQ, outQ)) = do
-  (addr, n, warp) <- handleWarp inQ outQ
+handleRead ((interconnect, output), (w, p), (inQ, outQ)) = do
+  (addr, n, warp) <- handleWarp inQ outQ output
   (do putTMVar interconnect (warp, w)
       putTMVar p (addr, n)
     ) <|> (do
@@ -120,15 +138,17 @@ handleRead (interconnect, (w, p), (inQ, outQ)) = do
       sendWarp (addr, n) warp' outQ
     )
 
-handleWarp :: TBQueue Packet -> TQueue Packet -> STM (Word8, Word32, Warp)
-handleWarp inQ outQ = do
+handleWarp :: TBQueue Packet -> TQueue Packet -> (Warp -> STM ()) -> STM (Word8, Word32, Warp)
+handleWarp inQ outQ output = do
   (addr, n, d) <- handlePacket Entrance inQ outQ
   case decodeWarp d of
-    Just warp -> return (addr, n, warp)
+    Just warp -> do
+      output warp
+      return (addr, n, warp)
     Nothing -> retry
 
 handleDelayedReply :: (G, R, (TBQueue Packet, TQueue Packet)) -> STM ()
-handleDelayedReply (_interconnect, (w, p), (_inQ, outQ)) = do
+handleDelayedReply ((_interconnect, _output), (w, p), (_inQ, outQ)) = do
   (addr, n) <- takeTMVar p
   warp <- takeTMVar w
   sendWarp (addr, n) warp outQ
